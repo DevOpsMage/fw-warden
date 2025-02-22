@@ -5,6 +5,7 @@ import pytz
 import ipaddress
 import uuid
 import subprocess
+import shutil
 from collections import deque
 from proxmoxer import ProxmoxAPI
 from dotenv import load_dotenv
@@ -92,6 +93,19 @@ def get_country(ip):
         return None
 
 def main():
+    # Truncate log file if it has grown too large or at midnight
+    now = datetime.datetime.now()
+    ARCHIVE_DIR = os.getenv('ARCHIVE_DIR', './archive')
+    if not os.path.exists(ARCHIVE_DIR):
+        os.makedirs(ARCHIVE_DIR)
+    if os.path.getsize(LOG_FILE) > 10 * 1024 * 1024 or now.hour == 0 and now.minute < 5:
+        try:
+            shutil.copy2(LOG_FILE, os.path.join(ARCHIVE_DIR, f"pve-firewall-{now.strftime('%Y%m%d-%H%M%S')}.log"))
+            with open(LOG_FILE, 'w') as f:
+                f.truncate()
+        except Exception as e:
+            print(f"Error truncating or archiving log file: {e}")
+            
     # Load state from file if exists
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r') as f:
