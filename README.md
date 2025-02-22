@@ -1,8 +1,9 @@
-# fw-warden
+# PVEFW-Warden
 
-fw-warden is an automated firewall blocker designed to detect and block IP addresses that repeatedly attempt to access your server. It tracks these IP addresses and prevents them from filling up your logs. After repeated attempts, it can permanently block offending IPs.
+PVEFW-Warden is an automated firewall blocker for Proxmox designed to detect and block IP addresses that repeatedly attempt to access your server. It tracks these IP addresses and prevents them from filling up your logs. After repeated attempts, it can permanently block offending IPs.
 
 ## Features
+
 - Detects and blocks repeated access attempts.
 - Tracks blocked IP addresses.
 - Prevents logs from being filled with repeated attempts.
@@ -11,18 +12,21 @@ fw-warden is an automated firewall blocker designed to detect and block IP addre
 ## Installation
 
 1. **Clone the repository:**
+
     ```sh
     git clone https://github.com/yourusername/fw-warden.git
     cd fw-warden
     ```
 
 2. **Install dependencies:**
+
     ```sh
     pip install -r requirements.txt
     ```
 
 3. **Set up environment variables:**
     Create a `.env` file in the project root directory with the following content:
+
     ```properties
     # Path to the firewall log file
     LOG_FILE=/var/log/pve-firewall.log
@@ -50,11 +54,13 @@ fw-warden is an automated firewall blocker designed to detect and block IP addre
 
 4. **Configure excluded networks:**
     Create an `exclude.conf` file in the project root directory with the IP networks you want to exclude from blocking:
+
     ```properties
     192.168.1.0/24
     ```
 
 5. **Run the application:**
+
     ```sh
     python main.py
     ```
