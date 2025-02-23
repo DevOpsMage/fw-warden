@@ -41,13 +41,6 @@ except FileNotFoundError:
     print(f"Error: GeoIP database not found at {GEOIP_DB}")
     geoip_reader = None
 
-# Initialize Proxmox API connection
-PROXMOX = ProxmoxAPI(
-    PROXMOX_HOST,
-    user=PROXMOX_USER,
-    password=PROXMOX_PASSWORD,
-    verify_ssl=VERIFY_SSL
-)
 
 def parse_log_line(line):
     """
@@ -93,6 +86,13 @@ def get_country(ip):
         return None
 
 def run_firewall_warden():
+    # Initialize Proxmox API connection
+    PROXMOX = ProxmoxAPI(
+    PROXMOX_HOST,
+    user=PROXMOX_USER,
+    password=PROXMOX_PASSWORD,
+    verify_ssl=VERIFY_SSL
+    )
     # Truncate log file if it has grown too large or at midnight
     now = datetime.datetime.now()
     ARCHIVE_DIR = os.getenv('ARCHIVE_DIR', './archive')
