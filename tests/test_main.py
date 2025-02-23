@@ -1,7 +1,7 @@
 import unittest
 import datetime
 import pytz
-import geoip2
+import geoip2.errors
 from unittest.mock import patch, mock_open, ANY, MagicMock
 from main import parse_log_line, get_country, run_firewall_warden
 
@@ -26,7 +26,7 @@ class TestMain(unittest.TestCase):
         self.assertIsNone(result)
 
     ### Test the get_country function
-    @unittest.mock.patch('main.geoip2.database.Reader')  # Mock the GeoIP reader
+    @unittest.mock.patch('main.geoip2.database.Reader', autospec=True)
     def test_get_country_found(self, mock_reader):
         mock_response = unittest.mock.MagicMock()
         mock_response.country.iso_code = "US"
@@ -35,7 +35,7 @@ class TestMain(unittest.TestCase):
         result = get_country("71.136.111.11")
         self.assertEqual(result, "US")
 
-    @unittest.mock.patch('main.geoip2.database.Reader')
+    @unittest.mock.patch('main.geoip2.database.Reader', autospec=True)
     def test_get_country_not_found(self, mock_reader):
         mock_reader.return_value.country.side_effect = geoip2.errors.AddressNotFoundError
 
@@ -44,8 +44,9 @@ class TestMain(unittest.TestCase):
 
     ### Test the main function    
     @patch('main.ProxmoxAPI')
-    @patch('main.geoip_reader')
-    @patch('builtins.open', new_callable=mock_open, read_data='{"drops": {}, "blocked": {}}')
+    @patch('main.geoip2.database.Reader')
+    @patch('main.os.path.getsize', return_value=1024)
+    @patch('builtins.open', new_callable=mock_open, read_data='log content')
     def test_run_firewall_warden_temp_and_permanent_blocks(self, mock_file, mock_geoip_reader, mock_proxmox_api):
         # Create a mock ProxmoxAPI instance
         mock_proxmox = mock_proxmox_api.return_value 
