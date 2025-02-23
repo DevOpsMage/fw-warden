@@ -92,7 +92,7 @@ def get_country(ip):
     except geoip2.errors.AddressNotFoundError:
         return None
 
-def main():
+def run_firewall_warden():
     # Truncate log file if it has grown too large or at midnight
     now = datetime.datetime.now()
     ARCHIVE_DIR = os.getenv('ARCHIVE_DIR', './archive')
@@ -105,7 +105,7 @@ def main():
                 f.truncate()
         except Exception as e:
             print(f"Error truncating or archiving log file: {e}")
-            
+
     # Load state from file if exists
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r') as f:
@@ -276,4 +276,4 @@ def main():
         json.dump(tracking_events, f)
 
 if __name__ == "__main__":
-    main()
+    run_firewall_warden()
