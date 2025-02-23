@@ -1,7 +1,6 @@
 import unittest
 import datetime
 import pytz
-import geoip2
 from unittest.mock import patch, mock_open, ANY, MagicMock
 from main import parse_log_line, get_country, run_firewall_warden
 
@@ -26,7 +25,7 @@ class TestMain(unittest.TestCase):
         self.assertIsNone(result)
 
     ### Test the get_country function
-    @unittest.mock.patch('geoip2.database.Reader')  # Mock the GeoIP reader
+    @unittest.mock.patch('main.geoip2.database.Reader')  # Mock the GeoIP reader
     def test_get_country_found(self, mock_reader):
         mock_response = unittest.mock.MagicMock()
         mock_response.country.iso_code = "US"
@@ -35,7 +34,7 @@ class TestMain(unittest.TestCase):
         result = get_country("71.136.111.11")
         self.assertEqual(result, "US")
 
-    @unittest.mock.patch('geoip2.database.Reader')
+    @unittest.mock.patch('main.geoip2.database.Reader')
     def test_get_country_not_found(self, mock_reader):
         mock_reader.return_value.country.side_effect = geoip2.errors.AddressNotFoundError
 

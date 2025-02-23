@@ -16,14 +16,14 @@ load_dotenv()
 
 # Configuration constants loaded from environment or defaults
 LOG_FILE = os.getenv('LOG_FILE', '/var/log/pve-firewall.log')
-STATE_FILE = os.getenv('STATE_FILE', './firewall_state.json')
-TRACKING_FILE = os.getenv('TRACKING_FILE', './tracking.json')
+STATE_FILE = os.getenv('STATE_FILE', 'firewall_state.json')
+TRACKING_FILE = os.getenv('TRACKING_FILE', 'tracking.json')
 NODE = os.getenv('NODE', 'pve01')
 PROXMOX_HOST = os.getenv('PROXMOX_HOST')
 PROXMOX_USER = os.getenv('PROXMOX_USER')
 PROXMOX_PASSWORD = os.getenv('PROXMOX_PASSWORD')
 VERIFY_SSL = os.getenv('PROXMOX_VERIFY_SSL', 'False').lower() in ('true', '1', 'yes')
-COUNTRY_CONF = os.getenv('COUNTRY_CONF', './country_conf')
+COUNTRY_CONF = os.getenv('COUNTRY_CONF', 'country_conf')
 GEOIP_DB = os.getenv('GEOIP_DB', '/usr/share/GeoIP/GeoLite2-Country.mmdb')
 
 # Load allowed countries from country_conf
@@ -95,7 +95,7 @@ def run_firewall_warden():
     )
     # Truncate log file if it has grown too large or at midnight
     now = datetime.datetime.now()
-    ARCHIVE_DIR = os.getenv('ARCHIVE_DIR', './archive')
+    ARCHIVE_DIR = os.getenv('ARCHIVE_DIR', 'pve-firewall-archive')
     if not os.path.exists(ARCHIVE_DIR):
         os.makedirs(ARCHIVE_DIR)
     if os.path.getsize(LOG_FILE) > 10 * 1024 * 1024 or now.hour == 0 and now.minute < 5:
