@@ -5,55 +5,56 @@ import pytz
 import ipaddress
 import uuid
 import subprocess
+import shutil
 from collections import deque
 from proxmoxer import ProxmoxAPI
 from dotenv import load_dotenv
+import geoip2.database
 
-# Load environment variables from the .env file
+# Load environment variables from .env
 load_dotenv()
 
-# Configuration constants loaded from the environment or default values
+# Configuration constants loaded from environment or defaults
 LOG_FILE = os.getenv('LOG_FILE', '/var/log/pve-firewall.log')
-STATE_FILE = os.getenv('STATE_FILE', './firewall_state.json')
-TRACKING_FILE = os.getenv('TRACKING_FILE', './tracking.json')
+STATE_FILE = os.getenv('STATE_FILE', 'firewall_state.json')
+TRACKING_FILE = os.getenv('TRACKING_FILE', 'tracking.json')
 NODE = os.getenv('NODE', 'pve01')
 PROXMOX_HOST = os.getenv('PROXMOX_HOST')
 PROXMOX_USER = os.getenv('PROXMOX_USER')
 PROXMOX_PASSWORD = os.getenv('PROXMOX_PASSWORD')
 VERIFY_SSL = os.getenv('PROXMOX_VERIFY_SSL', 'False').lower() in ('true', '1', 'yes')
+COUNTRY_CONF = os.getenv('COUNTRY_CONF', 'country_conf')
+GEOIP_DB = os.getenv('GEOIP_DB', '/usr/share/GeoIP/GeoLite2-Country.mmdb')
 
-# Load excluded networks from exclude.conf
-EXCLUDE_CONF = os.getenv('EXCLUDE_CONF', './exclude.conf')
-
+# Load allowed countries from country_conf
 try:
-    with open(EXCLUDE_CONF, 'r') as f:
-        excluded_networks = [ipaddress.ip_network(line.strip()) for line in f if line.strip()]
+    with open(COUNTRY_CONF, 'r') as f:
+        allowed_countries = {line.strip().upper() for line in f if line.strip()}
 except FileNotFoundError:
-    print(f"Warning: {EXCLUDE_CONF} not found. No networks will be excluded.")
-    excluded_networks = []
-except Exception as e:
-    print(f"Error reading {EXCLUDE_CONF}: {e}")
-    excluded_networks = []
+    print(f"Warning: {COUNTRY_CONF} not found. No countries allowed.")
+    allowed_countries = set()
 
-# Initialize the Proxmox API connection
-PROXMOX = ProxmoxAPI(
-    PROXMOX_HOST,
-    user=PROXMOX_USER,
-    password=PROXMOX_PASSWORD,
-    verify_ssl=VERIFY_SSL
-)
+# Load GeoIP database if available
+try:
+    geoip_reader = geoip2.database.Reader(GEOIP_DB)
+except FileNotFoundError:
+    print(f"Error: GeoIP database not found at {GEOIP_DB}")
+    geoip_reader = None
+
 
 def parse_log_line(line):
     """
     Parse a log line from the firewall log.
-    Returns a tuple (vmid, src_ip, timestamp) if the line matches the expected format,
-    or None if it does not.
+    Returns a tuple (vmid, src_ip, timestamp, action) if valid, else None.
     """
     parts = line.split()
-    if len(parts) < 10 or parts[5] != "policy" or parts[6] != "DROP:":
+    if len(parts) < 10 or parts[5] != "policy":
         return None
     vmid = parts[0]
     if not vmid.isdigit():
+        return None
+    action = parts[6]  # "DROP:" or "ACCEPT:"
+    if action not in ["DROP:", "ACCEPT:"]:
         return None
     timestamp_str = parts[3] + " " + parts[4]
     try:
@@ -67,32 +68,58 @@ def parse_log_line(line):
             break
     else:
         return None
-    # Sanitize src_ip to ensure it's a valid IP address
+    # Sanitize src_ip
     try:
         ipaddress.ip_address(src_ip)
     except ValueError:
         return None
-    return vmid, src_ip, timestamp
+    return vmid, src_ip, timestamp, action
 
-def main():
-    # Load the current state from file if it exists; otherwise, initialize state
+def get_country(ip):
+    """Get country code for an IP using GeoIP database."""
+    if geoip_reader is None:
+        return None
+    try:
+        response = geoip_reader.country(ip)
+        return response.country.iso_code
+    except geoip2.errors.AddressNotFoundError:
+        return None
+
+def run_firewall_warden():
+    # Initialize Proxmox API connection
+    PROXMOX = ProxmoxAPI(
+    PROXMOX_HOST,
+    user=PROXMOX_USER,
+    password=PROXMOX_PASSWORD,
+    verify_ssl=VERIFY_SSL
+    )
+    # Truncate log file if it has grown too large or at midnight
+    now = datetime.datetime.now()
+    ARCHIVE_DIR = os.getenv('ARCHIVE_DIR', 'pve-firewall-archive')
+    if not os.path.exists(ARCHIVE_DIR):
+        os.makedirs(ARCHIVE_DIR)
+    if os.path.getsize(LOG_FILE) > 10 * 1024 * 1024 or now.hour == 0 and now.minute < 5:
+        try:
+            shutil.copy2(LOG_FILE, os.path.join(ARCHIVE_DIR, f"pve-firewall-{now.strftime('%Y%m%d-%H%M%S')}.log"))
+            with open(LOG_FILE, 'w') as f:
+                f.truncate()
+        except Exception as e:
+            print(f"Error truncating or archiving log file: {e}")
+
+    # Load state from file if exists
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r') as f:
             state = json.load(f)
-            # Convert drop timestamps back to datetime objects
             for key in state.get('drops', {}):
                 state['drops'][key] = deque(
                     [datetime.datetime.fromisoformat(ts) for ts in state['drops'][key]],
                     maxlen=5
                 )
-            # Handle blocked entries
             for key in state.get('blocked', {}):
-                blocked_entry = state['blocked'][key]
-                if blocked_entry['expiration'] is not None:
-                    blocked_entry['expiration'] = datetime.datetime.fromisoformat(blocked_entry['expiration'])
-                # else, it's already None
-                if 'unique_id' not in blocked_entry:
-                    blocked_entry['unique_id'] = str(uuid.uuid4())
+                blocked = state['blocked'][key]
+                if blocked['expiration']:
+                    blocked['expiration'] = datetime.datetime.fromisoformat(blocked['expiration'])
+                blocked.setdefault('permanent', False)
     else:
         state = {
             'drops': {},
@@ -101,17 +128,17 @@ def main():
             'log_file_position': 0
         }
 
-    # Load tracking data for auditing blocked events
+    # Load tracking events
     if os.path.exists(TRACKING_FILE):
-        with open(TRACKING_FILE, 'r') as tf:
+        with open(TRACKING_FILE, 'r') as f:
             try:
-                tracking_events = json.load(tf)
+                tracking_events = json.load(f)
             except json.JSONDecodeError:
                 tracking_events = []
     else:
         tracking_events = []
 
-    # Get block counts for each IP
+    # Get block counts for each IP using jq
     try:
         result = subprocess.check_output([
             "jq",
@@ -124,14 +151,10 @@ def main():
         print(f"Error running jq query: {e}")
         block_counts = {}
 
-    # Determine where to start reading the log file based on inode
+    # Determine log file position
     current_inode = os.stat(LOG_FILE).st_ino
-    if state['log_file_inode'] == current_inode:
-        position = state['log_file_position']
-    else:
-        position = 0
+    position = state['log_file_position'] if state['log_file_inode'] == current_inode else 0
 
-    # Open and process the log file from the last known position
     with open(LOG_FILE, 'r') as f:
         if position > 0:
             f.seek(position)
@@ -141,96 +164,116 @@ def main():
                 break
             parsed = parse_log_line(line)
             if parsed:
-                vmid, src_ip, timestamp = parsed
+                vmid, src_ip, timestamp, action = parsed
                 key = f"{vmid}:{src_ip}"
-                if key not in state['drops']:
-                    state['drops'][key] = deque(maxlen=5)
-                state['drops'][key].append(timestamp)
-                # If 5 drops within 5 minutes, trigger blocking
-                if len(state['drops'][key]) == 5:
-                    time_diff = (state['drops'][key][-1] - state['drops'][key][0]).total_seconds() / 60.0
-                    if time_diff <= 5:
-                        src_ip_obj = ipaddress.ip_address(src_ip)
-                        # Skip IPs in excluded networks
-                        if any(src_ip_obj in net for net in excluded_networks):
-                            continue
-                        now = datetime.datetime.now(pytz.utc)
-                        # Add rule if not blocked or block has expired (if expiration is not None)
-                        if key not in state['blocked'] or (state['blocked'][key]['expiration'] is not None and state['blocked'][key]['expiration'] < now):
+
+                # Geolocation check
+                country = get_country(src_ip)
+                if country and country not in allowed_countries:
+                    if key not in state['blocked'] or not state['blocked'][key]['permanent']:
+                        unique_id = str(uuid.uuid4())
+                        rule = {
+                            'enable': 1,
+                            'type': 'in',
+                            'action': 'DROP',
+                            'source': src_ip,
+                            'comment': f"Permanent geo-block at {datetime.datetime.now(pytz.utc).isoformat()} - ID: {unique_id}"
+                        }
+                        try:
+                            response = PROXMOX.nodes(NODE).qemu(vmid).firewall.rules.post(**rule)
+                            state['blocked'][key] = {
+                                'rule_index': response,
+                                'expiration': None,
+                                'unique_id': unique_id,
+                                'permanent': True
+                            }
+                            tracking_events.append({
+                                'timestamp': datetime.datetime.now(pytz.utc).isoformat(),
+                                'vmid': vmid,
+                                'src_ip': src_ip,
+                                'unique_id': unique_id,
+                                'rule_index': response,
+                                'expiration': 'permanent',
+                                'reason': 'disallowed country'
+                            })
+                        except Exception as e:
+                            print(f"Failed to block IP {src_ip} for VM {vmid}: {e}")
+                elif action == "DROP:" and not state['blocked'].get(key, {}).get('permanent', False):
+                    if key not in state['drops']:
+                        state['drops'][key] = deque(maxlen=5)
+                    state['drops'][key].append(timestamp)
+                    if len(state['drops'][key]) == 5:
+                        time_diff = (state['drops'][key][-1] - state['drops'][key][0]).total_seconds() / 60.0
+                        if time_diff <= 5:
                             unique_id = str(uuid.uuid4())
                             rule = {
                                 'enable': 1,
                                 'type': 'in',
                                 'action': 'DROP',
                                 'source': src_ip,
-                                'log': 'nolog',
-                                'comment': f"Blocked by automation at {now.isoformat()} - ID: {unique_id}"
+                                'comment': f"Temp block at {datetime.datetime.now(pytz.utc).isoformat()} - ID: {unique_id}"
                             }
                             try:
                                 response = PROXMOX.nodes(NODE).qemu(vmid).firewall.rules.post(**rule)
-                                rule_index = response
                                 previous_blocks = block_counts.get(src_ip, 0)
                                 if previous_blocks >= 7:
                                     expiration = None  # Permanent block
                                 elif previous_blocks >= 5:
-                                    expiration = now + datetime.timedelta(days=7)
+                                    expiration = datetime.datetime.now(pytz.utc) + datetime.timedelta(days=7)
                                 else:
-                                    expiration = now + datetime.timedelta(hours=1)
+                                    expiration = datetime.datetime.now(pytz.utc) + datetime.timedelta(hours=1)
                                 state['blocked'][key] = {
-                                    'rule_index': rule_index,
+                                    'rule_index': response,
                                     'expiration': expiration,
-                                    'unique_id': unique_id
+                                    'unique_id': unique_id,
+                                    'permanent': expiration is None
                                 }
-                                tracking_event = {
-                                    "timestamp": now.isoformat(),
-                                    "vmid": vmid,
-                                    "src_ip": src_ip,
-                                    "unique_id": unique_id,
-                                    "rule_index": rule_index,
-                                    "expiration": expiration.isoformat() if expiration else "permanent",
-                                    "previous_blocks": previous_blocks
-                                }
-                                tracking_events.append(tracking_event)
+                                tracking_events.append({
+                                    'timestamp': datetime.datetime.now(pytz.utc).isoformat(),
+                                    'vmid': vmid,
+                                    'src_ip': src_ip,
+                                    'unique_id': unique_id,
+                                    'rule_index': response,
+                                    'expiration': expiration.isoformat() if expiration else 'permanent',
+                                    'reason': "multiple drops",
+                                    'previous_blocks': previous_blocks
+                                })
                             except Exception as e:
-                                print(f"Failed to add rule for VM {vmid}, IP {src_ip}: {e}")
+                                print(f"Failed to temp block IP {src_ip} for VM {vmid}: {e}")
             position = f.tell()
 
+    # Remove expired temporary blocks
     now = datetime.datetime.now(pytz.utc)
-    # Remove expired block rules (only if expiration is not None)
-    for key in list(state['blocked']):
-        blocked_entry = state['blocked'][key]
-        if blocked_entry['expiration'] is not None and blocked_entry['expiration'] < now:
-            vmid, src_ip = key.split(':', 1)
-            unique_id = blocked_entry['unique_id']
+    for key, blocked in list(state['blocked'].items()):
+        if not blocked['permanent'] and blocked['expiration'] and blocked['expiration'] < now:
             try:
-                rules = PROXMOX.nodes(NODE).qemu(vmid).firewall.rules.get()
-                for rule in rules:
-                    if rule.get('comment', '').endswith(f"ID: {unique_id}"):
-                        PROXMOX.nodes(NODE).qemu(vmid).firewall.rules(rule['pos']).delete()
-                        break
+                PROXMOX.nodes(NODE).qemu(key.split(':')[0]).firewall.rules.delete(blocked['rule_index'])
                 del state['blocked'][key]
+                if key in state['drops']:
+                    del state['drops'][key]
             except Exception as e:
-                print(f"Failed to remove rule for VM {vmid}, IP {src_ip}: {e}")
+                print(f"Failed to remove rule {blocked['rule_index']} for {key}: {e}")
 
-    # Save state to file
+    # Save state
     state_to_save = {
         'log_file_inode': current_inode,
         'log_file_position': position,
-        'drops': {key: [ts.isoformat() for ts in deq] for key, deq in state['drops'].items()},
+        'drops': {k: [ts.isoformat() for ts in d] for k, d in state['drops'].items()},
         'blocked': {
-            key: {
-                'rule_index': val['rule_index'],
-                'expiration': val['expiration'].isoformat() if val['expiration'] is not None else None,
-                'unique_id': val['unique_id']
-            } for key, val in state['blocked'].items()
+            k: {
+                'rule_index': v['rule_index'],
+                'expiration': v['expiration'].isoformat() if v['expiration'] else None,
+                'unique_id': v['unique_id'],
+                'permanent': v['permanent']
+            } for k, v in state['blocked'].items()
         }
     }
     with open(STATE_FILE, 'w') as f:
         json.dump(state_to_save, f)
 
     # Save tracking events
-    with open(TRACKING_FILE, 'w') as tf:
-        json.dump(tracking_events, tf, indent=4)
+    with open(TRACKING_FILE, 'w') as f:
+        json.dump(tracking_events, f)
 
 if __name__ == "__main__":
-    main()
+    run_firewall_warden()
