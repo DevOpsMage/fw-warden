@@ -42,10 +42,12 @@ class TestMain(unittest.TestCase):
         self.assertIsNone(result)
 
     ### Test the main function    
-    @patch('main.PROXMOX')
+    @patch('main.ProxmoxAPI')
     @patch('main.geoip_reader')
     @patch('builtins.open', new_callable=mock_open, read_data='{"drops": {}, "blocked": {}}')
-    def test_run_firewall_warden_temp_and_permanent_blocks(self, mock_file, mock_geoip_reader, mock_proxmox):
+    def test_run_firewall_warden_temp_and_permanent_blocks(self, mock_file, mock_geoip_reader, mock_proxmox_api):
+        # Create a mock ProxmoxAPI instance
+        mock_proxmox = mock_proxmox_api.return_value 
         # Mock time to control block expiry
         mock_now = datetime.datetime(2025, 3, 1, 10, 0, 0, tzinfo=pytz.utc)
         with patch('main.datetime.datetime') as mock_datetime:
