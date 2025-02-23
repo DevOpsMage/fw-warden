@@ -1,6 +1,7 @@
 import unittest
 import datetime
 import pytz
+import geoip2
 from unittest.mock import patch, mock_open, ANY, MagicMock
 from main import parse_log_line, get_country, run_firewall_warden
 
